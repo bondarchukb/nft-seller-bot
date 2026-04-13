@@ -1,0 +1,42 @@
+{
+  "name": "nft-seller-bot",
+  "version": "1.0.0",
+  "description": "NFT minting and selling bot with off-chain simulation and on-chain ERC-721 integration",
+  "main": "dist/index.js",
+  "bin": {
+    "nft-bot": "dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/cli/index.ts",
+    "start": "node dist/cli/index.js",
+    "compile": "npx hardhat compile",
+    "test": "npx hardhat test",
+    "deploy:local": "npx hardhat run scripts/deploy.ts --network localhost",
+    "deploy:sepolia": "npx hardhat run scripts/deploy.ts --network sepolia",
+    "node": "npx hardhat node",
+    "clean": "rm -rf dist artifacts cache"
+  },
+  "keywords": ["nft", "ethereum", "erc721", "bot", "marketplace"],
+  "license": "MIT",
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.2",
+    "chalk": "^4.1.2",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.2",
+    "lowdb": "^1.0.0",
+    "ora": "^5.4.1",
+    "table": "^6.8.2",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@types/lowdb": "^1.0.15",
+    "@types/node": "^22.5.4",
+    "@types/uuid": "^10.0.0",
+    "hardhat": "^2.22.12",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.2"
+  }
+}
