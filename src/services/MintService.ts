@@ -6,22 +6,22 @@ import { StorageService } from "./StorageService";
 
 // ── Mint fee (service fee) price curve ──────────────────────────────────────
 //
-// Minting an NFT is a paid service. The fee rises with each new token
-// to reflect growing demand and to reward early adopters.
+// Minting an NFT is a paid service. The fee rises with each new token.
 //
 //   fee(tokenId) = BASE_FEE + (tokenId - 1) × FEE_STEP
 //
-//   Token #1  → 1.00 SIM   (early-adopter price)
+//   Token #1  → 1.00 SIM
 //   Token #2  → 1.50 SIM
 //   Token #10 → 5.50 SIM
-//   Token #100 → 50.50 SIM
 //
 // On every mint, the fee is split:
-//   50% → distributed equally to ALL existing NFT holders (dividend)
+//   50% → distributed PROPORTIONALLY to all existing holders
+//          (weighted by how many NFTs each address holds)
 //   50% → platform revenue
 //
-// This creates a built-in viral incentive: every holder earns from every
-// new mint, so existing owners are motivated to bring in new buyers.
+// "Holders earn the most" — owning more NFTs means a larger share of every
+// future mint fee AND every future sale dividend. Early, heavy holders
+// are the most incentivised to market the collection.
 
 const BASE_FEE = 1.0;    // SIM
 const FEE_STEP = 0.5;    // SIM per additional token
@@ -44,9 +44,12 @@ export interface MintOptions {
 export interface MintResult {
   nft: NFT;
   mintFee: string;
-  dividendPerHolder: string;
-  dividendRecipients: number;
-  platformFee: string;
+  dividendPool: string;         // 50% of mint fee distributed to holders
+  dividendPerToken: string;     // pool ÷ total existing supply
+  totalSupplyBefore: number;    // existing NFT count before this mint
+  uniqueHolders: number;        // number of distinct holder addresses
+  platformFee: string;          // 50% of mint fee kept by platform
+  generatedBy?: "llm" | "fallback";
 }
 
 export class MintService {
@@ -68,12 +71,13 @@ export class MintService {
    * Mint an NFT.
    *
    * The caller pays the mint service fee. The fee is split:
-   *   • 50% → divided equally among all EXISTING holders (paid immediately)
+   *   • 50% → distributed PROPORTIONALLY to all existing holders
+   *            (share = holder's NFT count / total existing supply)
    *   • 50% → platform revenue
    *
-   * The new NFT is NOT auto-listed. The owner decides if/when to sell it
-   * and at what price — they are incentivised to do so because every
-   * sale also earns all holders a dividend.
+   * The new NFT is NOT auto-listed. The owner sets their own resale price.
+   * "Holders earn the most" — the more NFTs an address holds, the larger
+   * its share of every future dividend.
    */
   mint(opts: MintOptions): MintResult {
     const tokenId  = this.storage.nextTokenId();
@@ -93,35 +97,39 @@ export class MintService {
     }
     minter.balance = (minterBalance - mintFee).toFixed(4);
 
-    // ── Snapshot existing holders BEFORE adding the new token ────────
-    const allNFTs   = this.storage.getAllNFTs();
-    const holderSet = new Set<string>();
-    for (const n of allNFTs) {
-      holderSet.add(n.owner.toLowerCase());
-    }
-    const holders      = Array.from(holderSet);
+    // ── Snapshot existing supply BEFORE adding the new token ─────────
+    const allNFTs      = this.storage.getAllNFTs();
+    const totalSupply  = allNFTs.length;          // existing tokens only
     const dividendPool = mintFee * DIVIDEND_SHARE;
     const platformCut  = mintFee * PLATFORM_SHARE;
-    const dividendEach = holders.length > 0 ? dividendPool / holders.length : 0;
 
-    // ── Distribute dividends to existing holders ─────────────────────
-    if (dividendEach > 0) {
-      for (const holderAddr of holders) {
+    // ── Distribute proportionally by NFT count held ───────────────────
+    // Build address → nft count map from existing supply
+    const holdingsMap = new Map<string, number>();
+    for (const n of allNFTs) {
+      const addr = n.owner.toLowerCase();
+      holdingsMap.set(addr, (holdingsMap.get(addr) ?? 0) + 1);
+    }
+
+    // dividendPerToken = dividendPool / totalSupply
+    // each holder receives: dividendPerToken × their token count
+    const dividendPerToken = totalSupply > 0 ? dividendPool / totalSupply : 0;
+
+    if (dividendPerToken > 0) {
+      for (const [holderAddr, count] of holdingsMap) {
+        const share = dividendPerToken * count;
         let holderUser = this.storage.getUserByAddress(holderAddr);
         if (!holderUser) {
           holderUser = this.createUser(holderAddr);
         }
-        holderUser.balance = (parseFloat(holderUser.balance) + dividendEach).toFixed(4);
+        holderUser.balance = (parseFloat(holderUser.balance) + share).toFixed(4);
         this.storage.saveUser(holderUser);
       }
-    } else {
-      // No existing holders — full fee goes to platform
-      // (already handled: platformCut accounts for the whole fee)
     }
 
     // ── Credit platform revenue ──────────────────────────────────────
     const settings = this.storage.getSettings();
-    const newRevenue = parseFloat(settings.platformRevenue ?? "0") + (holders.length > 0 ? platformCut : mintFee);
+    const newRevenue = parseFloat(settings.platformRevenue ?? "0") + (totalSupply > 0 ? platformCut : mintFee);
     this.storage.updateSettings({ platformRevenue: newRevenue.toFixed(4) });
 
     // ── Create the NFT (unlisted — owner sets their own price) ───────
@@ -164,9 +172,11 @@ export class MintService {
     return {
       nft,
       mintFee: mintFee.toFixed(4),
-      dividendPerHolder: dividendEach.toFixed(4),
-      dividendRecipients: holders.length,
-      platformFee: (holders.length > 0 ? platformCut : mintFee).toFixed(4),
+      dividendPool: (totalSupply > 0 ? dividendPool : 0).toFixed(4),
+      dividendPerToken: dividendPerToken.toFixed(6),
+      totalSupplyBefore: totalSupply,
+      uniqueHolders: holdingsMap.size,
+      platformFee: (totalSupply > 0 ? platformCut : mintFee).toFixed(4),
     };
   }
 

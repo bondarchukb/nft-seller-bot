@@ -28,9 +28,12 @@ export class MarketplaceError extends Error {
 export interface BuyResult {
   nft: NFT;
   salePrice: string;
-  sellerProceeds: string;      // 50% of sale price → seller
-  dividendPerHolder: string;   // 50% ÷ holder count → each holder
-  dividendRecipients: number;
+  sellerProceeds: string;       // 50% of sale price → seller
+  dividendPool: string;         // 50% of sale price distributed to holders
+  dividendPerToken: string;     // pool ÷ eligibleSupply
+  eligibleSupply: number;       // tokens counted for dividends (excl. buyer's)
+  totalSupply: number;          // total NFTs in existence at time of sale
+  uniqueHolders: number;        // distinct holder addresses (excl. buyer)
 }
 
 export class MarketplaceService {
@@ -149,20 +152,25 @@ export class MarketplaceService {
     const seller = nft.owner;
     const now    = new Date().toISOString();
 
-    // ── Snapshot ALL current NFT owners BEFORE the sale ───────────────────
-    // Each unique owner gets a dividend share.
-    const allNFTs   = this.storage.getAllNFTs();
-    const holderSet = new Set<string>();
+    // ── Snapshot the full supply BEFORE the sale ────────────────────────────
+    // Dividends are proportional to NFT count held — the more you hold,
+    // the larger your share. The buyer is excluded (not yet a holder).
+    const allNFTs     = this.storage.getAllNFTs();
+    const totalSupply = allNFTs.length;   // includes the token being sold
+
+    // Build holdings map: address → count (excluding the buyer)
+    const holdingsMap = new Map<string, number>();
     for (const n of allNFTs) {
-      // Count owners of any NFT (including the one being sold)
-      holderSet.add(n.owner.toLowerCase());
+      const addr = n.owner.toLowerCase();
+      if (addr === buyer.toLowerCase()) continue;  // buyer excluded
+      holdingsMap.set(addr, (holdingsMap.get(addr) ?? 0) + 1);
     }
-    const holders = Array.from(holderSet);
+    const eligibleSupply = Array.from(holdingsMap.values()).reduce((s, c) => s + c, 0);
 
     // ── Calculate payments ────────────────────────────────────────────────
-    const sellerProceeds = salePrice * SELLER_SHARE;
-    const dividendPool   = salePrice * DIVIDEND_SHARE;
-    const dividendEach   = holders.length > 0 ? dividendPool / holders.length : 0;
+    const sellerProceeds  = salePrice * SELLER_SHARE;
+    const dividendPool    = salePrice * DIVIDEND_SHARE;
+    const dividendPerToken = eligibleSupply > 0 ? dividendPool / eligibleSupply : 0;
 
     // ── Debit buyer ───────────────────────────────────────────────────────
     buyerUser.balance = (parseFloat(buyerUser.balance) - salePrice).toFixed(4);
@@ -176,12 +184,10 @@ export class MarketplaceService {
       this.storage.saveUser(sellerUser);
     }
 
-    // ── Distribute dividends to all holders ───────────────────────────────
-    if (dividendEach > 0) {
-      for (const holderAddr of holders) {
-        // Skip if this holder is the buyer (they don't hold yet)
-        if (holderAddr === buyer.toLowerCase()) continue;
-
+    // ── Distribute dividends proportionally by NFT count ─────────────────
+    if (dividendPerToken > 0) {
+      for (const [holderAddr, count] of holdingsMap) {
+        const share = dividendPerToken * count;
         let holderUser = this.storage.getUserByAddress(holderAddr);
         if (!holderUser) {
           holderUser = {
@@ -191,7 +197,7 @@ export class MarketplaceService {
             createdAt: now,
           };
         }
-        holderUser.balance = (parseFloat(holderUser.balance) + dividendEach).toFixed(4);
+        holderUser.balance = (parseFloat(holderUser.balance) + share).toFixed(4);
         this.storage.saveUser(holderUser);
       }
     }
@@ -226,8 +232,11 @@ export class MarketplaceService {
       nft,
       salePrice: priceSnapshot,
       sellerProceeds: sellerProceeds.toFixed(4),
-      dividendPerHolder: dividendEach.toFixed(4),
-      dividendRecipients: holders.length,
+      dividendPool: dividendPool.toFixed(4),
+      dividendPerToken: dividendPerToken.toFixed(6),
+      eligibleSupply,
+      totalSupply,
+      uniqueHolders: holdingsMap.size,
     };
   }
 

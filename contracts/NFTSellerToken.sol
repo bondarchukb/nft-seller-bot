@@ -313,16 +313,23 @@ contract NFTSellerToken is
     // ── Internals ──────────────────────────────────────────────────────────
 
     /**
-     * @dev Distribute `amount` to every current token holder, optionally
-     *      skipping one address (e.g. the new buyer / minter).
-     *      Accumulates into dividendBalance — no external calls here.
+     * @dev Distribute `amountPerToken` to every current token holder,
+     *      proportionally by their NFT count. An address holding N tokens
+     *      receives N × amountPerToken — i.e. "holders earn the most".
+     *
+     *      One `exclude` address is skipped (the minter / buyer who is not
+     *      yet eligible). Dividends accumulate in dividendBalance; no
+     *      external calls are made here, so reentrancy is not a risk.
+     *
+     *      Caller must pass: amountPerToken = dividendPool / eligibleSupply
      */
-    function _distributeToHolders(uint256 amount, address exclude) internal {
+    function _distributeToHolders(uint256 amountPerToken, address exclude) internal {
         uint256 supply = totalSupply();
         for (uint256 i = 0; i < supply; i++) {
             address holder = ownerOf(tokenByIndex(i));
             if (holder != exclude) {
-                dividendBalance[holder] += amount;
+                // Each token owned adds one unit of amountPerToken → proportional
+                dividendBalance[holder] += amountPerToken;
             }
         }
     }
