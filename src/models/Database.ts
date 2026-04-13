@@ -10,5 +10,6 @@ export interface DatabaseSchema {
     nextTokenId: number;
     contractAddress?: string;
     network?: string;
+    platformRevenue: string;   // Accumulated SIM kept by the platform
   };
 }

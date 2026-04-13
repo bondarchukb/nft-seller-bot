@@ -9,21 +9,36 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title NFTSellerToken
- * @notice ERC-721 NFT with a built-in marketplace that implements:
+ * @notice ERC-721 NFT with a built-in marketplace.
  *
- *   1. **Ascending price curve** — each new token costs more than the last.
- *      mintPrice(tokenId) = BASE_PRICE + (tokenId - 1) × PRICE_STEP
- *      e.g. token #1 = 0.001 ETH, token #2 = 0.0015 ETH, …
+ * ── Business model ────────────────────────────────────────────────────────
  *
- *   2. **Holder dividend** — on every sale, 50% of proceeds go to the seller
- *      and 50% are split equally among ALL current token holders at the
- *      time of sale. Dividends accumulate in a per-address balance and can
- *      be claimed at any time.
+ * Minting is a PAID SERVICE. Every new token costs more than the last,
+ * creating an ascending price curve:
  *
- * Gas note: iterating all holders on every sale becomes expensive at scale.
- * For production (>1000 holders) use a "dividends per share" accumulator
- * pattern instead. This contract uses the simple loop approach, which is
- * fine for small collections and is easy to audit.
+ *   mintFee(tokenId) = BASE_PRICE + (tokenId - 1) × PRICE_STEP
+ *   e.g. token #1 = 0.001 ETH, token #2 = 0.0015 ETH, …
+ *
+ * Mint fee split:
+ *   50% → divided equally among all EXISTING holders (immediate dividend)
+ *   50% → contract (platform revenue, withdrawable by owner)
+ *
+ * Sale fee split (secondary market):
+ *   50% → seller
+ *   50% → divided equally among ALL current holders at time of sale
+ *
+ * ── Viral incentive ──────────────────────────────────────────────────────
+ *
+ * Every holder earns from EVERY new mint AND every secondary sale.
+ * This means every owner is economically motivated to bring in new buyers
+ * and new minters — the collection markets itself.
+ *
+ * ── Gas note ─────────────────────────────────────────────────────────────
+ *
+ * Iterating all holders on every sale is O(n). Fine for small collections.
+ * For large collections (>1 000 holders) use a "dividends per share"
+ * accumulator pattern to avoid the loop. This implementation is chosen for
+ * clarity and auditability.
  */
 contract NFTSellerToken is
     ERC721,
@@ -105,15 +120,20 @@ contract NFTSellerToken is
     // ── Minting ────────────────────────────────────────────────────────────
 
     /**
-     * @notice Mint a new NFT. Caller must send exactly mintPrice(nextTokenId) ETH.
-     *         The ETH paid is distributed: 50% kept by the contract as
-     *         owner revenue, 50% split among all current holders as dividends.
+     * @notice Pay the mint service fee and receive a new NFT.
      *
-     *         If this is the very first token (no holders yet), 100% goes to
-     *         contract revenue.
+     *         msg.value must equal mintPrice(nextTokenId) exactly.
+     *
+     *         Fee split:
+     *           • 50% → immediate dividend to all EXISTING holders
+     *           • 50% → contract (platform revenue, withdrawn via withdrawRevenue)
+     *         If no holders exist yet, 100% goes to platform revenue.
+     *
+     *         The minted token is NOT auto-listed. The owner decides if
+     *         and at what price to sell it on the secondary market.
      *
      * @param to           Recipient of the NFT.
-     * @param metadataUri  IPFS / HTTPS metadata URI.
+     * @param metadataUri  IPFS or HTTPS URI pointing to JSON metadata.
      */
     function mint(address to, string calldata metadataUri)
         external

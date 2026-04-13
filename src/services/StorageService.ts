@@ -10,6 +10,7 @@ const DEFAULT_DB: DatabaseSchema = {
   transactions: [],
   settings: {
     nextTokenId: 1,
+    platformRevenue: "0",
   },
 };
 

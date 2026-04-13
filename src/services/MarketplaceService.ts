@@ -3,13 +3,20 @@ import { NFT } from "../models/NFT";
 import { Transaction } from "../models/Transaction";
 import { StorageService } from "./StorageService";
 
-// ── Dividend split ─────────────────────────────────────────────────────────
-// When an NFT is sold:
-//   50% of sale price → seller
-//   50% of sale price → divided equally among ALL current NFT holders
-//                        (excluding the seller, who already receives their half)
-const SELLER_SHARE    = 0.5;
-const DIVIDEND_SHARE  = 0.5;
+// ── Secondary sale revenue split ───────────────────────────────────────────
+//
+// Business model: the platform earns from mint fees (handled in MintService).
+// On secondary sales the platform takes NO cut — the full incentive goes to
+// the community to encourage more trading:
+//
+//   50% of sale price → seller (reward for holding and pricing well)
+//   50% of sale price → split equally among ALL current NFT holders
+//                        (reward for marketing the collection)
+//
+// Because every sale pays dividends to all holders, every owner is
+// economically motivated to bring in new buyers.
+const SELLER_SHARE   = 0.5;
+const DIVIDEND_SHARE = 0.5;
 
 export class MarketplaceError extends Error {
   constructor(message: string) {
@@ -21,7 +28,8 @@ export class MarketplaceError extends Error {
 export interface BuyResult {
   nft: NFT;
   salePrice: string;
-  dividendPerHolder: string;
+  sellerProceeds: string;      // 50% of sale price → seller
+  dividendPerHolder: string;   // 50% ÷ holder count → each holder
   dividendRecipients: number;
 }
 
@@ -99,12 +107,14 @@ export class MarketplaceService {
   /**
    * Purchase a listed NFT.
    *
-   * Revenue split:
-   *   • 50% → seller
-   *   • 50% → divided equally among all current NFT owners at the moment of sale
-   *            (the buyer is NOT yet an owner at this point; the seller IS included
-   *             in the holder set and receives their dividend share on top of the
-   *             50% seller proceeds — rewarding long-term holders)
+   * Sale price split:
+   *   • 50% → seller (reward for holding and pricing the NFT)
+   *   • 50% → divided equally among ALL current holders at time of sale
+   *            (viral incentive: every holder profits when someone buys ANY NFT)
+   *
+   * The buyer is NOT yet a holder at the point of distribution.
+   * The seller IS included in the holder pool, so a long-term holder who
+   * also sells receives proceeds + dividend share.
    */
   buy(nftId: string, buyer: string): BuyResult {
     const nft = this.storage.getNFTById(nftId);
@@ -215,6 +225,7 @@ export class MarketplaceService {
     return {
       nft,
       salePrice: priceSnapshot,
+      sellerProceeds: sellerProceeds.toFixed(4),
       dividendPerHolder: dividendEach.toFixed(4),
       dividendRecipients: holders.length,
     };

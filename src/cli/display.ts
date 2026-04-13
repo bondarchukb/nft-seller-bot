@@ -145,6 +145,40 @@ export function printUser(user: User): void {
   console.log();
 }
 
+export interface PlatformStats {
+  totalMinted: number;
+  listedNow: number;
+  uniqueHolders: number;
+  totalUsers: number;
+  salesCount: number;
+  totalVolume: string;
+  platformRevenue: string;
+  nextMintFee: string;
+  nextTokenId: number;
+}
+
+export function printStats(s: PlatformStats): void {
+  console.log();
+  console.log(chalk.bold.cyan("  ┌─ Platform Statistics ───────────────────────────"));
+  console.log(`  │`);
+  console.log(`  │  NFTs minted         : ${chalk.yellow(String(s.totalMinted))}`);
+  console.log(`  │  Currently listed    : ${chalk.green(String(s.listedNow))}`);
+  console.log(`  │  Unique holders      : ${chalk.cyan(String(s.uniqueHolders))}`);
+  console.log(`  │  Registered users    : ${chalk.dim(String(s.totalUsers))}`);
+  console.log(`  │`);
+  console.log(`  │  Total sales         : ${chalk.yellow(String(s.salesCount))}`);
+  console.log(`  │  Total sale volume   : ${chalk.green(`${s.totalVolume} SIM`)}`);
+  console.log(`  │  Platform revenue    : ${chalk.blue(`${s.platformRevenue} SIM`)}`);
+  console.log(`  │`);
+  console.log(`  │  Next token ID       : #${chalk.white(String(s.nextTokenId))}`);
+  console.log(`  │  Next mint fee       : ${chalk.yellow(`${s.nextMintFee} SIM`)}`);
+  console.log(`  │    └─ holder dividend: ${chalk.green(`${(parseFloat(s.nextMintFee) * 0.5).toFixed(4)} SIM`)} split among ${s.uniqueHolders} holder(s)`);
+  console.log(`  │    └─ platform cut  : ${chalk.blue(`${(parseFloat(s.nextMintFee) * 0.5).toFixed(4)} SIM`)}`);
+  console.log(`  │`);
+  console.log(chalk.bold.cyan("  └───────────────────────────────────────────────"));
+  console.log();
+}
+
 export function success(msg: string): void {
   console.log(chalk.green(`\n  ✓ ${msg}\n`));
 }

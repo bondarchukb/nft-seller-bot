@@ -11,6 +11,7 @@ import {
   printNFTTable,
   printTransactionTable,
   printUser,
+  printStats,
   success,
   error,
   info,
@@ -37,8 +38,7 @@ function getWeb3(): Web3Service {
 }
 
 function isOnChain(): boolean {
-  const mode = process.env.BOT_MODE ?? "simulation";
-  return mode !== "simulation";
+  return (process.env.BOT_MODE ?? "simulation") !== "simulation";
 }
 
 // ── CLI root ────────────────────────────────────────────────────────────────
@@ -48,8 +48,13 @@ const program = new Command();
 program
   .name("nft-bot")
   .description(
-    chalk.cyan("NFT Seller Bot") +
-    " — mint, list and trade NFTs in simulation or on-chain mode.\n" +
+    chalk.bold.cyan("NFT Seller Bot") + "\n\n" +
+    chalk.bold("Business model:\n") +
+    "  • Minting an NFT is a " + chalk.yellow("paid service") + " — each new NFT costs more (ascending curve).\n" +
+    "  • Mint fee split: " + chalk.green("50% dividends to all holders") + " / " + chalk.blue("50% platform revenue") + ".\n" +
+    "  • Sale split:     " + chalk.green("50% to seller") + " / " + chalk.cyan("50% dividends to all holders") + ".\n" +
+    "  • Every holder is incentivised to market the collection — more buyers\n" +
+    "    means more dividends for " + chalk.italic("every") + " existing owner.\n\n" +
     chalk.dim("  Set BOT_MODE=simulation (default) | local | sepolia | polygon_amoy")
   )
   .version("1.0.0");
@@ -58,16 +63,23 @@ program
 
 program
   .command("mint")
-  .description("Mint a new NFT (price is auto-calculated based on supply)")
+  .description(
+    "Pay the mint service fee and receive a new NFT.\n" +
+    "  Fee = BASE_FEE + (tokenId−1) × STEP. 50% goes to existing holders immediately."
+  )
   .requiredOption("-n, --name <name>", "NFT name")
   .requiredOption("-d, --desc <description>", "NFT description")
   .requiredOption("-i, --image <url>", "Image URL or IPFS URI")
-  .option("-o, --owner <address>", "Owner address / username", "alice")
-  .option("-a, --attributes <json>", "JSON array of attributes, e.g. '[{\"trait_type\":\"Rarity\",\"value\":\"Legendary\"}]'", "[]")
+  .option("-o, --owner <address>", "Who is minting (and paying the fee)", "alice")
+  .option(
+    "-a, --attributes <json>",
+    "JSON array of traits, e.g. '[{\"trait_type\":\"Rarity\",\"value\":\"Legendary\"}]'",
+    "[]"
+  )
   .option("--uri <metadataUri>", "Metadata URI (on-chain mode only)")
   .action(async (opts) => {
     try {
-      let attributes = [];
+      let attributes: unknown[] = [];
       try { attributes = JSON.parse(opts.attributes); } catch {
         error("--attributes must be valid JSON array"); process.exit(1);
       }
@@ -77,24 +89,33 @@ program
         if (!opts.uri) { error("--uri <metadataUri> is required for on-chain minting"); process.exit(1); }
         console.log(chalk.dim("  Sending mint transaction…"));
         const nft = await web3.mint({
-          name: opts.name,
-          description: opts.desc,
-          image: opts.image,
-          attributes,
-          metadataUri: opts.uri,
+          name: opts.name, description: opts.desc, image: opts.image,
+          attributes: attributes as never, metadataUri: opts.uri,
         });
-        success(`Minted on-chain! Token #${nft.tokenId} tx: ${nft.mintTxHash}`);
+        success(`Minted on-chain! Token #${nft.tokenId}  tx: ${nft.mintTxHash}`);
         printNFT(nft);
       } else {
-        const nft = minter.mint({
-          name: opts.name,
-          description: opts.desc,
-          image: opts.image,
-          attributes,
-          owner: opts.owner,
+        const result = minter.mint({
+          name: opts.name, description: opts.desc, image: opts.image,
+          attributes: attributes as never, owner: opts.owner,
         });
-        success(`Minted NFT #${nft.tokenId} — auto-price: ${nft.price} ${nft.currency}`);
+        const { nft, mintFee, dividendPerHolder, dividendRecipients, platformFee } = result;
+
+        console.log();
+        console.log(chalk.bold.cyan("  ✦ NFT Minted — Fee Breakdown"));
+        console.log(`  Mint fee paid  : ${chalk.yellow(`${mintFee} SIM`)}`);
+        if (dividendRecipients > 0) {
+          console.log(
+            `  Holder dividend: ${chalk.green(`${dividendPerHolder} SIM`)} × ${dividendRecipients} holder(s) ` +
+            chalk.dim("(50% of fee)")
+          );
+        } else {
+          console.log(`  Holder dividend: ${chalk.dim("none (you are the first holder!)")}`);
+        }
+        console.log(`  Platform fee   : ${chalk.blue(`${platformFee} SIM`)} ${chalk.dim("(50% of fee)")}`);
+        console.log();
         printNFT(nft);
+        info(`Your NFT is unlisted. Use: nft-bot list -t ${nft.tokenId} -p <price> -s ${opts.owner}`);
       }
     } catch (e: unknown) {
       error((e as Error).message);
@@ -106,26 +127,29 @@ program
 
 program
   .command("batch-mint")
-  .description("Batch mint NFTs from a JSON file")
-  .requiredOption("-f, --file <path>", "Path to JSON file with array of mint options")
-  .option("-o, --owner <address>", "Owner for all NFTs (simulation only)", "alice")
+  .description("Batch mint NFTs from a JSON file. Each token is individually priced.")
+  .requiredOption("-f, --file <path>", "Path to JSON array of mint options")
+  .option("-o, --owner <address>", "Default owner for all NFTs (simulation)", "alice")
   .action(async (opts) => {
     const fs = await import("fs");
     try {
-      const raw = fs.readFileSync(opts.file, "utf-8");
-      const items = JSON.parse(raw);
+      const raw   = fs.readFileSync(opts.file, "utf-8");
+      const items = JSON.parse(raw) as Record<string, unknown>[];
       if (!Array.isArray(items)) { error("File must contain a JSON array"); process.exit(1); }
 
       if (isOnChain()) {
         const web3 = getWeb3();
         console.log(chalk.dim(`  Sending batch mint for ${items.length} NFTs…`));
-        const nfts = await web3.batchMint(items);
+        const nfts = await web3.batchMint(items as unknown as import("../web3/Web3Service").Web3MintOptions[]);
         success(`Batch minted ${nfts.length} NFTs on-chain`);
         printNFTTable(nfts, "Batch Minted NFTs");
       } else {
-        const nfts = minter.batchMint(items.map((i: Record<string, unknown>) => ({ ...i, owner: (i.owner as string) ?? opts.owner })) as import("../services/MintService").MintOptions[]);
-        success(`Batch minted ${nfts.length} NFTs`);
-        printNFTTable(nfts, "Batch Minted NFTs");
+        const results = minter.batchMint(
+          items.map((i) => ({ ...i, owner: (i.owner as string) ?? opts.owner })) as import("../services/MintService").MintOptions[]
+        );
+        const totalFee = results.reduce((sum, r) => sum + parseFloat(r.mintFee), 0);
+        success(`Batch minted ${results.length} NFTs. Total fees paid: ${totalFee.toFixed(4)} SIM`);
+        printNFTTable(results.map((r) => r.nft), "Batch Minted NFTs");
       }
     } catch (e: unknown) {
       error((e as Error).message);
@@ -137,22 +161,27 @@ program
 
 program
   .command("list")
-  .description("List an NFT for sale")
+  .description("List your NFT for sale at your chosen price.")
   .requiredOption("-t, --token <tokenId>", "Token ID to list", parseInt)
-  .requiredOption("-p, --price <price>", "Sale price (ETH or SIM)")
-  .option("-s, --seller <address>", "Seller address / username", "alice")
+  .requiredOption("-p, --price <price>", "Your asking price (SIM or ETH)")
+  .option("-s, --seller <address>", "Your address / username", "alice")
   .action(async (opts) => {
     try {
       if (isOnChain()) {
         const web3 = getWeb3();
         const hash = await web3.listForSale(opts.token, opts.price);
-        success(`Listed token #${opts.token} at ${opts.price} ETH (tx: ${hash})`);
+        success(`Listed token #${opts.token} at ${opts.price} ETH  (tx: ${hash})`);
       } else {
         const nft = storage.getNFTByTokenId(opts.token);
         if (!nft) { error(`Token #${opts.token} not found`); process.exit(1); }
         market.list(nft.id, opts.seller, opts.price);
-        success(`Listed "${nft.name}" (#${opts.token}) for ${opts.price} ${nft.currency}`);
-        printNFT(storage.getNFTById(nft.id)!);
+        const updated = storage.getNFTById(nft.id)!;
+        success(`"${nft.name}" (#${opts.token}) listed at ${opts.price} ${nft.currency}`);
+        console.log(chalk.dim(
+          `  When it sells: you receive ${(parseFloat(opts.price) * 0.5).toFixed(4)} SIM (50%) + your holder dividend share.\n` +
+          `  Every other holder also earns a dividend — they want this to sell too.`
+        ));
+        printNFT(updated);
       }
     } catch (e: unknown) {
       error((e as Error).message);
@@ -164,20 +193,20 @@ program
 
 program
   .command("delist")
-  .description("Remove an NFT from sale")
+  .description("Remove your NFT from sale.")
   .requiredOption("-t, --token <tokenId>", "Token ID to delist", parseInt)
-  .option("-o, --owner <address>", "Owner address / username", "alice")
+  .option("-o, --owner <address>", "Your address / username", "alice")
   .action(async (opts) => {
     try {
       if (isOnChain()) {
         const web3 = getWeb3();
         const hash = await web3.delist(opts.token);
-        success(`Delisted token #${opts.token} (tx: ${hash})`);
+        success(`Delisted token #${opts.token}  (tx: ${hash})`);
       } else {
         const nft = storage.getNFTByTokenId(opts.token);
         if (!nft) { error(`Token #${opts.token} not found`); process.exit(1); }
         market.delist(nft.id, opts.owner);
-        success(`Delisted "${nft.name}" (#${opts.token})`);
+        success(`"${nft.name}" (#${opts.token}) removed from sale.`);
       }
     } catch (e: unknown) {
       error((e as Error).message);
@@ -189,25 +218,37 @@ program
 
 program
   .command("buy")
-  .description("Purchase a listed NFT. 50% of the price is distributed to all current holders")
+  .description(
+    "Buy a listed NFT.\n" +
+    "  50% of the price goes to the seller; 50% is split among ALL current holders.\n" +
+    "  Every holder profits — that's why they all market this collection."
+  )
   .requiredOption("-t, --token <tokenId>", "Token ID to buy", parseInt)
-  .option("-b, --buyer <address>", "Buyer address / username (simulation only)", "bob")
+  .option("-b, --buyer <address>", "Your address / username (simulation only)", "bob")
   .action(async (opts) => {
     try {
       if (isOnChain()) {
         const web3 = getWeb3();
         const listing = await web3.getListing(opts.token);
+        if (!listing.active) { error(`Token #${opts.token} is not listed for sale`); process.exit(1); }
         console.log(chalk.dim(`  Buying token #${opts.token} for ${listing.priceEth} ETH…`));
         const hash = await web3.buy(opts.token);
-        success(`Purchased token #${opts.token} (tx: ${hash})`);
+        success(`Purchased token #${opts.token}  (tx: ${hash})`);
       } else {
         const nft = storage.getNFTByTokenId(opts.token);
         if (!nft) { error(`Token #${opts.token} not found`); process.exit(1); }
         const result = market.buy(nft.id, opts.buyer);
-        success(
-          `${opts.buyer} bought "${result.nft.name}" (#${opts.token}) for ${result.salePrice} ${result.nft.currency}\n` +
-          `  Dividend paid to ${result.dividendRecipients} holder(s): ${result.dividendPerHolder} ${result.nft.currency} each`
+        const { sellerProceeds, dividendPerHolder, dividendRecipients } = result;
+
+        console.log();
+        console.log(chalk.bold.cyan("  ✦ Purchase complete — Revenue breakdown"));
+        console.log(`  Sale price       : ${chalk.yellow(`${result.salePrice} SIM`)}`);
+        console.log(`  Seller receives  : ${chalk.green(`${sellerProceeds} SIM`)} ${chalk.dim("(50%)")}`);
+        console.log(
+          `  Holder dividend  : ${chalk.cyan(`${dividendPerHolder} SIM`)} × ${dividendRecipients} holder(s) ` +
+          chalk.dim("(50% split equally)")
         );
+        console.log();
         printNFT(storage.getNFTById(nft.id)!);
       }
     } catch (e: unknown) {
@@ -220,8 +261,8 @@ program
 
 program
   .command("transfer")
-  .description("Transfer an NFT to another address (no sale)")
-  .requiredOption("-t, --token <tokenId>", "Token ID to transfer", parseInt)
+  .description("Transfer an NFT to another address without a sale (no dividends triggered).")
+  .requiredOption("-t, --token <tokenId>", "Token ID", parseInt)
   .requiredOption("--to <address>", "Recipient address / username")
   .option("-f, --from <address>", "Sender address / username", "alice")
   .action(async (opts) => {
@@ -229,7 +270,7 @@ program
       const nft = storage.getNFTByTokenId(opts.token);
       if (!nft) { error(`Token #${opts.token} not found`); process.exit(1); }
       market.transfer(nft.id, opts.from, opts.to);
-      success(`Transferred "#${opts.token}" from ${opts.from} to ${opts.to}`);
+      success(`"${nft.name}" (#${opts.token}) transferred from ${opts.from} → ${opts.to}`);
     } catch (e: unknown) {
       error((e as Error).message);
       process.exit(1);
@@ -240,13 +281,13 @@ program
 
 program
   .command("marketplace")
-  .description("Show all NFTs currently listed for sale")
+  .description("Show all NFTs currently listed for sale.")
   .action(() => {
     const listed = market.getMarketplace();
     if (listed.length === 0) {
-      info("No NFTs are currently listed for sale.");
+      info("No NFTs are listed. Mint one and list it: nft-bot list -t <id> -p <price>");
     } else {
-      printNFTTable(listed, `Marketplace — ${listed.length} listing(s)`);
+      printNFTTable(listed, `Marketplace — ${listed.length} active listing(s)`);
     }
   });
 
@@ -254,14 +295,14 @@ program
 
 program
   .command("inventory")
-  .description("Show NFTs owned by an address")
-  .option("-o, --owner <address>", "Owner address / username", "alice")
+  .description("Show NFTs owned by an address.")
+  .option("-o, --owner <address>", "Address / username", "alice")
   .action((opts) => {
     const nfts = market.getInventory(opts.owner);
     const user = market.getUser(opts.owner);
     if (user) printUser(user);
     if (nfts.length === 0) {
-      info(`${opts.owner} does not own any NFTs.`);
+      info(`${opts.owner} does not own any NFTs yet.`);
     } else {
       printNFTTable(nfts, `${opts.owner}'s Inventory — ${nfts.length} NFT(s)`);
     }
@@ -271,7 +312,7 @@ program
 
 program
   .command("view")
-  .description("View details of a single NFT")
+  .description("View full details of a single NFT.")
   .requiredOption("-t, --token <tokenId>", "Token ID", parseInt)
   .action(async (opts) => {
     try {
@@ -279,12 +320,9 @@ program
       if (isOnChain()) {
         const web3 = getWeb3();
         const listing = await web3.getListing(opts.token);
-        if (nft && listing.active) {
-          nft.price = listing.priceEth;
-          nft.status = "listed";
-        }
+        if (nft && listing.active) { nft.price = listing.priceEth; nft.status = "listed"; }
       }
-      if (!nft) { error(`Token #${opts.token} not found in local DB`); process.exit(1); }
+      if (!nft) { error(`Token #${opts.token} not found`); process.exit(1); }
       printNFT(nft);
     } catch (e: unknown) {
       error((e as Error).message);
@@ -296,11 +334,11 @@ program
 
 program
   .command("all")
-  .description("List all NFTs in the database")
+  .description("List every NFT in the database.")
   .action(() => {
     const nfts = storage.getAllNFTs();
     if (nfts.length === 0) {
-      info("No NFTs minted yet. Run: nft-bot mint -n 'My NFT' -d 'desc' -i 'http://...'");
+      info("No NFTs minted yet. Try: nft-bot mint -n 'My NFT' -d 'desc' -i 'https://...'");
     } else {
       printNFTTable(nfts, `All NFTs — ${nfts.length} total`);
     }
@@ -310,38 +348,36 @@ program
 
 program
   .command("history")
-  .description("Show transaction history")
+  .description("Transaction log (last 20 events).")
   .action(() => {
-    const txs = storage.getAllTransactions();
-    printTransactionTable(txs);
+    printTransactionTable(storage.getAllTransactions());
   });
 
 // ── account ───────────────────────────────────────────────────────────────────
 
 program
   .command("account")
-  .description("Show account/wallet info")
-  .option("-a, --address <address>", "Address / username to inspect", "alice")
+  .description("Show balance and NFT holdings for an address.")
+  .option("-a, --address <address>", "Address / username", "alice")
   .action(async (opts) => {
     try {
       if (isOnChain()) {
-        const web3 = getWeb3();
-        const addr = web3.walletAddress;
+        const web3    = getWeb3();
         const balance = await web3.getBalance();
         const network = await web3.getNetwork();
-        const total = await web3.getTotalMinted();
+        const total   = await web3.getTotalMinted();
         console.log();
-        console.log(chalk.bold.cyan("  ┌─ Wallet ───────────────────────────────────────"));
-        console.log(`  │  Address  : ${chalk.yellow(addr)}`);
+        console.log(chalk.bold.cyan("  ┌─ On-chain Wallet ───────────────────────────────"));
+        console.log(`  │  Address  : ${chalk.yellow(web3.walletAddress)}`);
         console.log(`  │  Balance  : ${chalk.green(`${balance} ETH`)}`);
         console.log(`  │  Network  : ${chalk.dim(network)}`);
-        console.log(`  │  Total    : ${total} NFTs minted on-chain`);
+        console.log(`  │  Total minted on-chain: ${total}`);
         console.log(chalk.bold.cyan("  └───────────────────────────────────────────────"));
         console.log();
       } else {
         const user = market.getUser(opts.address);
         if (!user) {
-          info(`No account found for "${opts.address}". Mint an NFT to create one.`);
+          info(`No account for "${opts.address}". Mint an NFT to create one.`);
         } else {
           printUser(user);
         }
@@ -352,25 +388,58 @@ program
     }
   });
 
+// ── stats ─────────────────────────────────────────────────────────────────────
+
+program
+  .command("stats")
+  .description("Platform statistics: total minted, revenue, holder count, etc.")
+  .action(() => {
+    const allNFTs  = storage.getAllNFTs();
+    const allUsers = storage.getAllUsers();
+    const allTxs   = storage.getAllTransactions();
+    const settings = storage.getSettings();
+
+    const holders      = new Set(allNFTs.map((n) => n.owner.toLowerCase())).size;
+    const listed       = allNFTs.filter((n) => n.status === "listed").length;
+    const sales        = allTxs.filter((t) => t.type === "sale");
+    const totalVolume  = sales.reduce((s, t) => s + parseFloat(t.price ?? "0"), 0);
+    const nextFee      = MintService.feeForToken(settings.nextTokenId);
+
+    printStats({
+      totalMinted:     allNFTs.length,
+      listedNow:       listed,
+      uniqueHolders:   holders,
+      totalUsers:      allUsers.length,
+      salesCount:      sales.length,
+      totalVolume:     totalVolume.toFixed(4),
+      platformRevenue: settings.platformRevenue ?? "0",
+      nextMintFee:     nextFee.toFixed(4),
+      nextTokenId:     settings.nextTokenId,
+    });
+  });
+
 // ── price-curve ───────────────────────────────────────────────────────────────
 
 program
   .command("price-curve")
-  .description("Show the price curve: how much each future token will cost")
-  .option("-c, --count <n>", "How many upcoming tokens to preview", "10")
+  .description("Preview the mint service fee for upcoming tokens.")
+  .option("-c, --count <n>", "Number of tokens to preview", "10")
   .action((opts) => {
     const settings = storage.getSettings();
-    const next = settings.nextTokenId;
-    const count = parseInt(opts.count);
+    const next     = settings.nextTokenId;
+    const count    = parseInt(opts.count);
     console.log();
-    console.log(chalk.bold.cyan("  Price Curve (simulation mode)"));
-    console.log(chalk.dim("  Formula: price = BASE_PRICE + (tokenId - 1) × STEP\n"));
+    console.log(chalk.bold.cyan("  Mint Fee Curve — what the service costs per token"));
+    console.log(chalk.dim("  Formula: fee = 1.00 + (tokenId − 1) × 0.50 SIM\n"));
+    console.log(chalk.dim("  50% of each fee → existing holders   50% → platform\n"));
     for (let i = 0; i < count; i++) {
-      const id = next + i;
-      const price = MintService.priceForToken(id);
-      const bar = "█".repeat(Math.min(Math.round(price * 2), 40));
+      const id   = next + i;
+      const fee  = MintService.feeForToken(id);
+      const div  = (fee * 0.5).toFixed(4);
+      const bar  = "█".repeat(Math.min(Math.round(fee), 40));
       console.log(
-        `  Token #${String(id).padStart(4, " ")} → ${chalk.green(`${price.toFixed(2)} SIM`)}  ${chalk.dim(bar)}`
+        `  Token #${String(id).padStart(4)} → fee ${chalk.yellow(`${fee.toFixed(2)} SIM`)}` +
+        `  holder div ${chalk.green(div)}  ${chalk.dim(bar)}`
       );
     }
     console.log();
@@ -380,17 +449,15 @@ program
 
 program
   .command("reset")
-  .description("Reset the simulation database (IRREVERSIBLE)")
-  .option("--confirm", "Skip the confirmation prompt")
-  .action(async (opts) => {
+  .description("Reset the simulation database (IRREVERSIBLE).")
+  .option("--confirm", "Skip confirmation")
+  .action((opts) => {
     if (!opts.confirm) {
-      error("Pass --confirm to reset the database. This will delete all simulation data.");
+      error("Pass --confirm to wipe the simulation database.");
       process.exit(1);
     }
     storage.reset();
-    success("Simulation database has been reset.");
+    success("Simulation database reset.");
   });
-
-// ── Parse ───────────────────────────────────────────────────────────────────
 
 program.parse(process.argv);
